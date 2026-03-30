@@ -57,10 +57,27 @@ if st.button("Ask", type="primary", disabled=not ask_url):
             st.error(f"Failed to submit question: {exc}")
             st.stop()
 
-        # --- Step 2: poll for result ---
+        # --- Step 2: poll for result, streaming steps as they arrive ---
         poll_url = f"{ask_url.rstrip('/')}/{job_id}"
         status_text = st.empty()
+        steps_header = st.empty()
+        steps_container = st.container()
         data: dict | None = None
+        prev_step_count = 0
+
+        def render_step(idx: int, step: dict) -> None:
+            kind = step.get("type", "")
+            tool = step.get("tool", "")
+            with steps_container:
+                if kind == "tool_call":
+                    st.markdown(f"**Step {idx} — tool call:** `{tool}`")
+                    st.code(step.get("sparql", ""), language="sparql")
+                elif kind == "tool_result":
+                    st.markdown(f"**Step {idx} — result from:** `{tool}`")
+                    st.code(step.get("preview", ""), language="json")
+                else:
+                    st.json(step)
+
         for i in range(1, MAX_POLLS + 1):
             status_text.info(f"Waiting for answer… ({i * POLL_INTERVAL}s elapsed)")
             time.sleep(POLL_INTERVAL)
@@ -73,6 +90,13 @@ if st.button("Ask", type="primary", disabled=not ask_url):
                 status_text.empty()
                 st.error(f"Polling failed: {exc}")
                 st.stop()
+
+            steps = result.get("steps", []) if result else []
+            if len(steps) > prev_step_count:
+                steps_header.markdown(f"**Reasoning trace ({len(steps)} steps so far)**")
+                for j in range(prev_step_count, len(steps)):
+                    render_step(j + 1, steps[j])
+                prev_step_count = len(steps)
 
             if result is not None and result.get("status") in ("complete", "error"):
                 data = result
@@ -90,20 +114,8 @@ if st.button("Ask", type="primary", disabled=not ask_url):
             st.markdown("### Answer")
             st.write(data.get("answer", "*(no answer)*"))
 
-        steps = data.get("steps", []) if data else []
-        if steps:
-            with st.expander(f"Reasoning trace ({len(steps)} steps)"):
-                for i, step in enumerate(steps, 1):
-                    kind = step.get("type", "")
-                    tool = step.get("tool", "")
-                    if kind == "tool_call":
-                        st.markdown(f"**Step {i} — tool call:** `{tool}`")
-                        st.code(step.get("sparql", ""), language="sparql")
-                    elif kind == "tool_result":
-                        st.markdown(f"**Step {i} — result from:** `{tool}`")
-                        st.code(step.get("preview", ""), language="json")
-                    else:
-                        st.json(step)
+        final_steps = data.get("steps", []) if data else []
+        steps_header.markdown(f"**Reasoning trace ({len(final_steps)} steps)**")
 
 if not ask_url:
     st.info("Set the `ASK_URL` environment variable to enable this.")
