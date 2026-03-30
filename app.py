@@ -57,65 +57,65 @@ if st.button("Ask", type="primary", disabled=not ask_url):
             st.error(f"Failed to submit question: {exc}")
             st.stop()
 
-        # --- Step 2: poll for result, streaming steps as they arrive ---
+        # --- Step 2: poll for result, streaming steps live inside st.status ---
         poll_url = f"{ask_url.rstrip('/')}/{job_id}"
-        status_text = st.empty()
-        steps_header = st.empty()
-        steps_container = st.container()
         data: dict | None = None
         prev_step_count = 0
 
-        def render_step(idx: int, step: dict) -> None:
-            kind = step.get("type", "")
-            tool = step.get("tool", "")
-            with steps_container:
-                if kind == "tool_call":
-                    st.markdown(f"**Step {idx} — tool call:** `{tool}`")
-                    st.code(step.get("sparql", ""), language="sparql")
-                elif kind == "tool_result":
-                    st.markdown(f"**Step {idx} — result from:** `{tool}`")
-                    st.code(step.get("preview", ""), language="json")
-                else:
-                    st.json(step)
+        with st.status("Agent is thinking…", expanded=True) as status_widget:
+            for i in range(1, MAX_POLLS + 1):
+                time.sleep(POLL_INTERVAL)
+                result: dict | None = None
+                try:
+                    poll_resp = requests.get(poll_url, timeout=30)
+                    poll_resp.raise_for_status()
+                    result = poll_resp.json()
+                except Exception as exc:
+                    status_widget.update(label="Polling failed", state="error")
+                    st.error(f"Polling failed: {exc}")
+                    st.stop()
 
-        for i in range(1, MAX_POLLS + 1):
-            status_text.info(f"Waiting for answer… ({i * POLL_INTERVAL}s elapsed)")
-            time.sleep(POLL_INTERVAL)
-            result: dict | None = None
-            try:
-                poll_resp = requests.get(poll_url, timeout=30)
-                poll_resp.raise_for_status()
-                result = poll_resp.json()
-            except Exception as exc:
-                status_text.empty()
-                st.error(f"Polling failed: {exc}")
-                st.stop()
-
-            steps = result.get("steps", []) if result else []
-            if len(steps) > prev_step_count:
-                steps_header.markdown(f"**Reasoning trace ({len(steps)} steps so far)**")
+                steps = result.get("steps", []) if result else []
                 for j in range(prev_step_count, len(steps)):
-                    render_step(j + 1, steps[j])
+                    step = steps[j]
+                    kind = step.get("type", "")
+                    tool = step.get("tool", "")
+                    if kind == "tool_call":
+                        st.markdown(f"**Step {j + 1} — tool call:** `{tool}`")
+                        st.code(step.get("sparql", ""), language="sparql")
+                    elif kind == "tool_result":
+                        st.markdown(f"**Step {j + 1} — result:** `{tool}`")
+                        st.code(step.get("preview", ""), language="json")
+                    else:
+                        st.json(step)
                 prev_step_count = len(steps)
 
-            if result is not None and result.get("status") in ("complete", "error"):
-                data = result
-                break
+                status_widget.update(
+                    label=f"Agent is thinking… ({i * POLL_INTERVAL}s, {prev_step_count} steps)"
+                )
 
-        status_text.empty()
+                if result is not None and result.get("status") in ("complete", "error"):
+                    data = result
+                    break
 
-        if data is None:
-            st.error(f"Timed out after {MAX_POLLS * POLL_INTERVAL}s. The job may still be running.")
-            st.stop()
-        elif data.get("status") == "error":
-            st.error(f"Agent error: {data.get('error', 'unknown error')}")
-            st.stop()
-        else:
+            if data is None:
+                status_widget.update(label="Timed out", state="error")
+                st.error(f"Timed out after {MAX_POLLS * POLL_INTERVAL}s. The job may still be running.")
+                st.stop()
+            elif data.get("status") == "error":
+                status_widget.update(label="Agent error", state="error")
+                st.error(f"Agent error: {data.get('error', 'unknown error')}")
+                st.stop()
+            else:
+                status_widget.update(
+                    label=f"Done — {prev_step_count} steps",
+                    state="complete",
+                    expanded=False,
+                )
+
+        if data:
             st.markdown("### Answer")
             st.write(data.get("answer", "*(no answer)*"))
-
-        final_steps = data.get("steps", []) if data else []
-        steps_header.markdown(f"**Reasoning trace ({len(final_steps)} steps)**")
 
 if not ask_url:
     st.info("Set the `ASK_URL` environment variable to enable this.")
