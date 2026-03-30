@@ -1,12 +1,14 @@
 """Sage Brain — Streamlit POC
 
 Talks to the agent API endpoint deployed by sage-brain-infra:
-  - POST /ask   — natural-language agent (Bedrock Strands + Claude Sonnet 4.6)
+  - POST /ask          — submit question, returns {"job_id": "..."}
+  - GET  /ask/{job_id} — poll until status == "complete" | "error"
 
 Set the API URL via environment variable or the sidebar.
 """
 
 import os
+import time
 
 import requests
 import streamlit as st
@@ -45,30 +47,61 @@ question = st.text_area(
     height=80,
 )
 
+POLL_INTERVAL = 5   # seconds between status checks
+MAX_POLLS     = 60  # 5 minutes total
+
 if st.button("Ask", type="primary", disabled=not ask_url):
     if not question.strip():
         st.warning("Enter a question first.")
     else:
-        with st.spinner("Thinking…"):
+        # --- Step 1: submit job ---
+        job_id: str | None = None
+        try:
+            resp = requests.post(
+                ask_url,
+                json={"question": question.strip()},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            job_id = resp.json()["job_id"]
+        except Exception as exc:
+            st.error(f"Failed to submit question: {exc}")
+            st.stop()
+
+        # --- Step 2: poll for result ---
+        poll_url = f"{ask_url.rstrip('/')}/{job_id}"
+        status_text = st.empty()
+        data: dict | None = None
+        for i in range(1, MAX_POLLS + 1):
+            status_text.info(f"Waiting for answer… ({i * POLL_INTERVAL}s elapsed)")
+            time.sleep(POLL_INTERVAL)
+            result: dict | None = None
             try:
-                resp = requests.post(
-                    ask_url,
-                    json={"question": question.strip()},
-                    timeout=60,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            except requests.exceptions.Timeout:
-                st.error("Request timed out (>60 s). The agent may still be running.")
-                st.stop()
+                poll_resp = requests.get(poll_url, timeout=30)
+                poll_resp.raise_for_status()
+                result = poll_resp.json()
             except Exception as exc:
-                st.error(f"Request failed: {exc}")
+                status_text.empty()
+                st.error(f"Polling failed: {exc}")
                 st.stop()
 
-        st.markdown("### Answer")
-        st.write(data.get("answer", "*(no answer)*"))
+            if result is not None and result.get("status") in ("complete", "error"):
+                data = result
+                break
 
-        steps = data.get("steps", [])
+        status_text.empty()
+
+        if data is None:
+            st.error(f"Timed out after {MAX_POLLS * POLL_INTERVAL}s. The job may still be running.")
+            st.stop()
+        elif data.get("status") == "error":
+            st.error(f"Agent error: {data.get('error', 'unknown error')}")
+            st.stop()
+        else:
+            st.markdown("### Answer")
+            st.write(data.get("answer", "*(no answer)*"))
+
+        steps = data.get("steps", []) if data else []
         if steps:
             with st.expander(f"Reasoning trace ({len(steps)} steps)"):
                 for i, step in enumerate(steps, 1):
