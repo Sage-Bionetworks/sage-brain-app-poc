@@ -23,18 +23,7 @@ st.set_page_config(page_title="Sage Brain", page_icon="🧠", layout="wide")
 st.title("🧠 Sage Brain")
 st.caption("Biomedical knowledge graph explorer powered by Amazon Neptune + Claude Sonnet 4.6")
 
-# ---------------------------------------------------------------------------
-# Sidebar — endpoint configuration
-# ---------------------------------------------------------------------------
-
-with st.sidebar:
-    st.header("API Endpoint")
-    ask_url = st.text_input(
-        "Agent URL (POST /ask)",
-        value=DEFAULT_ASK_URL,
-        placeholder="https://….execute-api.us-east-1.amazonaws.com/prod/ask",
-    )
-    st.caption("Get this value from CDK output: `AgentApiUrl`.")
+ask_url = DEFAULT_ASK_URL
 
 # ---------------------------------------------------------------------------
 # Ask interface
@@ -117,4 +106,4 @@ if st.button("Ask", type="primary", disabled=not ask_url):
                         st.json(step)
 
 if not ask_url:
-    st.info("Set the **Agent URL** in the sidebar to enable this.")
+    st.info("Set the `ASK_URL` environment variable to enable this.")
