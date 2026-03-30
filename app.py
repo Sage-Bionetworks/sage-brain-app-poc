@@ -90,9 +90,11 @@ if st.button("Ask", type="primary", disabled=not ask_url):
                         st.json(step)
                 prev_step_count = len(steps)
 
-                status_widget.update(
-                    label=f"Agent is thinking… ({i * POLL_INTERVAL}s, {prev_step_count} steps)"
-                )
+                detail = result.get("status_detail", "") if result else ""
+                label = detail or f"Agent is thinking… ({i * POLL_INTERVAL}s elapsed)"
+                if prev_step_count:
+                    label += f" — {prev_step_count} steps"
+                status_widget.update(label=label)
 
                 if result is not None and result.get("status") in ("complete", "error"):
                     data = result
