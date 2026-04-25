@@ -4,11 +4,12 @@ Talks to the agent API endpoint deployed by sage-brain-infra:
   - POST /ask          — submit question, returns {"job_id": "..."}
   - GET  /ask/{job_id} — poll until status == "complete" | "error"
 
-Set the API URL via environment variable or the sidebar.
+Configure via .streamlit/secrets.toml (copy from secrets.toml.example).
 """
 
 import os
 import time
+import urllib.parse
 
 import requests
 import streamlit as st
@@ -17,13 +18,107 @@ import streamlit as st
 # Config
 # ---------------------------------------------------------------------------
 
-DEFAULT_ASK_URL = os.environ.get("ASK_URL", "")
+ASK_URL = st.secrets.get("ASK_URL") or os.environ.get("ASK_URL", "")
+
+_oauth        = st.secrets.get("synapse_oauth", {})
+CLIENT_ID     = _oauth.get("client_id", "")
+CLIENT_SECRET = _oauth.get("client_secret", "")
+REDIRECT_URI  = _oauth.get("redirect_uri", "")
+
+SYNAPSE_AUTH_URL     = "https://signin.synapse.org"
+SYNAPSE_TOKEN_URL    = "https://repo-prod.prod.sagebase.org/auth/v1/oauth2/token"
+SYNAPSE_USERINFO_URL = "https://repo-prod.prod.sagebase.org/auth/v1/oauth2/userinfo"
 
 st.set_page_config(page_title="Sage Brain", page_icon="🧠", layout="wide")
+
+# ---------------------------------------------------------------------------
+# OAuth helpers
+# ---------------------------------------------------------------------------
+
+def _auth_url() -> str:
+    params = {
+        "response_type": "code",
+        "client_id": CLIENT_ID,
+        "redirect_uri": REDIRECT_URI,
+        "scope": "openid profile email",
+        "prompt": "select_account",
+    }
+    return f"{SYNAPSE_AUTH_URL}?{urllib.parse.urlencode(params)}"
+
+
+def _exchange_code(code: str) -> dict:
+    resp = requests.post(
+        SYNAPSE_TOKEN_URL,
+        data={"grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT_URI},
+        auth=(CLIENT_ID, CLIENT_SECRET),
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _fetch_userinfo(access_token: str) -> dict:
+    resp = requests.get(
+        SYNAPSE_USERINFO_URL,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+# ---------------------------------------------------------------------------
+# Handle OAuth callback — Synapse redirects here with ?code=...
+# ---------------------------------------------------------------------------
+
+if "code" in st.query_params and "access_token" not in st.session_state:
+    try:
+        token_data = _exchange_code(st.query_params["code"])
+        st.session_state["access_token"] = token_data["access_token"]
+        st.session_state["userinfo"] = _fetch_userinfo(token_data["access_token"])
+    except Exception as exc:
+        st.error(f"Login failed: {exc}")
+        st.stop()
+    st.query_params.clear()
+    st.rerun()
+
+# ---------------------------------------------------------------------------
+# Auth gate
+# ---------------------------------------------------------------------------
+
+if "access_token" not in st.session_state:
+    st.title("🧠 Sage Brain")
+    st.caption("Biomedical knowledge graph explorer powered by Amazon Neptune + Claude Sonnet 4.6")
+    st.divider()
+    st.info("Sign in with your Synapse account to continue.")
+    st.link_button("Sign in with Synapse", _auth_url(), type="primary")
+    st.stop()
+
+# ---------------------------------------------------------------------------
+# Sidebar — user info & logout
+# ---------------------------------------------------------------------------
+
+userinfo = st.session_state.get("userinfo", {})
+
+with st.sidebar:
+    st.markdown("**Signed in as**")
+    display_name = userinfo.get("name") or userinfo.get("email") or userinfo.get("sub", "")
+    st.write(display_name)
+    if email := userinfo.get("email"):
+        if email != display_name:
+            st.caption(email)
+    if st.button("Sign out"):
+        st.session_state.pop("access_token", None)
+        st.session_state.pop("userinfo", None)
+        st.rerun()
+
+# ---------------------------------------------------------------------------
+# Main UI
+# ---------------------------------------------------------------------------
+
 st.title("🧠 Sage Brain")
 st.caption("Biomedical knowledge graph explorer powered by Amazon Neptune + Claude Sonnet 4.6")
 
-ask_url = DEFAULT_ASK_URL
+_api_headers = {"Authorization": f"Bearer {st.session_state['access_token']}"}
 
 # ---------------------------------------------------------------------------
 # Ask interface
@@ -39,7 +134,7 @@ question = st.text_area(
 POLL_INTERVAL = 5   # seconds between status checks
 MAX_POLLS     = 60  # 5 minutes total
 
-if st.button("Ask", type="primary", disabled=not ask_url):
+if st.button("Ask", type="primary", disabled=not ASK_URL):
     if not question.strip():
         st.warning("Enter a question first.")
     else:
@@ -47,8 +142,9 @@ if st.button("Ask", type="primary", disabled=not ask_url):
         job_id: str | None = None
         try:
             resp = requests.post(
-                ask_url,
+                ASK_URL,
                 json={"question": question.strip()},
+                headers=_api_headers,
                 timeout=30,
             )
             resp.raise_for_status()
@@ -58,7 +154,7 @@ if st.button("Ask", type="primary", disabled=not ask_url):
             st.stop()
 
         # --- Step 2: poll for result, streaming steps live inside st.status ---
-        poll_url = f"{ask_url.rstrip('/')}/{job_id}"
+        poll_url = f"{ASK_URL.rstrip('/')}/{job_id}"
         data: dict | None = None
         prev_step_count = 0
 
@@ -67,7 +163,7 @@ if st.button("Ask", type="primary", disabled=not ask_url):
                 time.sleep(POLL_INTERVAL)
                 result: dict | None = None
                 try:
-                    poll_resp = requests.get(poll_url, timeout=30)
+                    poll_resp = requests.get(poll_url, headers=_api_headers, timeout=30)
                     poll_resp.raise_for_status()
                     result = poll_resp.json()
                 except Exception as exc:
@@ -119,5 +215,5 @@ if st.button("Ask", type="primary", disabled=not ask_url):
             st.markdown("### Answer")
             st.write(data.get("answer", "*(no answer)*"))
 
-if not ask_url:
-    st.info("Set the `ASK_URL` environment variable to enable this.")
+if not ASK_URL:
+    st.info("Set `ASK_URL` in `.streamlit/secrets.toml` or as an environment variable.")
