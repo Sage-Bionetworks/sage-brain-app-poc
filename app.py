@@ -40,7 +40,7 @@ def _auth_url() -> str:
         "response_type": "code",
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
-        "scope": "openid profile email",
+        "scope": "openid view profile email",
         "prompt": "select_account",
     }
     return f"{SYNAPSE_AUTH_URL}?{urllib.parse.urlencode(params)}"
